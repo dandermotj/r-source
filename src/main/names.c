@@ -184,6 +184,7 @@ FUNTAB R_FunTab[] =
 {":",		do_colon,	0,	1,	2,	{PP_BINARY2, PREC_COLON,  0}},
 /* does not evaluate */
 {"~",		do_tilde,	0,	0,	-1,	{PP_BINARY,  PREC_TILDE,  0}},
+{"|>",		do_pipeop,	0,	0,	2,	{PP_BINARY,  PREC_PIPE1,  0}},
 
 
 /* Logic Related Functions */
@@ -1058,6 +1059,7 @@ static void SymbolShortcuts(void)
     R_DimSymbol = install("dim");
     R_DollarSymbol = install("$");
     R_DotsSymbol = install("...");
+    R_PlaceholderSymbol = install("_");
     R_DropSymbol = install("drop");
 
     /* The last value symbol is used by the interpreter for recording
@@ -1393,6 +1395,60 @@ SEXP attribute_hidden do_tilde(SEXP call, SEXP op, SEXP args, SEXP rho)
 	UNPROTECT(2);
 	return call;
     }
+}
+
+static int is_pipe(SEXP lang) {
+    return TYPEOF(lang) == LANGSXP &&
+        strcmp(CHAR(PRINTNAME(CAR(lang))), "|>") == 0;
+}
+
+int replace_placeholder_list (SEXP lang, SEXP lhs)
+{
+    int replaced = 0;
+    SEXP cur = CAR(lang), next = CDR(lang), prev = lang;
+
+    for (; cur != R_NilValue; cur = CAR(next), next = CDR(next)) {
+        switch (TYPEOF(cur)) {
+        case LANGSXP:
+            if (is_pipe(cur)) break;
+            replace_placeholder_list(CDR(cur), lhs);
+            break;
+        case SYMSXP:
+            if (strcmp(CHAR(PRINTNAME(cur)), "_") == 0) {
+                SETCAR(prev, lhs);
+                replaced = 1;
+            }
+            break;
+        default:
+            break;
+        }
+
+        // Only necessary with primitive impl. |>, not with parser impl. >>
+        if (is_pipe(cur)) break;
+
+        prev = CDR(prev);
+    }
+
+    return replaced;
+}
+
+SEXP attribute_hidden do_pipeop(SEXP call, SEXP op, SEXP args, SEXP rho)
+{
+    SEXP lhs = CADR(call);
+    SEXP rhs = CADDR(call);
+
+    if (TYPEOF(rhs) != LANGSXP)
+        error(_("The pipe operator requires a function call as RHS"));
+
+    SEXP fun = CAR(rhs);
+    SEXP rhs_args = CDR(rhs);
+
+    int is_replaced = replace_placeholder_list(rhs_args, lhs);
+
+    if (is_replaced)
+        return eval(lcons(fun, rhs_args), rho);
+    else
+        return eval(lcons(fun, lcons(lhs, rhs_args)), rho);
 }
 
 /* For use in packages */
